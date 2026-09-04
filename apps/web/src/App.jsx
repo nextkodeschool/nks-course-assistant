@@ -1,21 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertCircle, ArrowRight, PanelLeft } from "lucide-react";
+import { ArrowRight, PanelLeft, Pencil, Trash2 } from "lucide-react";
 import { api, askQuestion } from "./api";
 import { Auth } from "./components/auth";
 import { Composer } from "./components/composer";
+import { Menu } from "./components/menu";
 import { Sidebar } from "./components/sidebar";
 import { Thread, ThreadAnchor } from "./components/thread";
-import { AssistantTurn, Thinking, UserTurn } from "./components/turn";
+import { AssistantTurn, ErrorTurn, Thinking, UserTurn } from "./components/turn";
 
 // Enforced server-side too; mirrored here so the limit is visible while
 // typing rather than discovered as a rejected request.
 const MAX_QUESTION = 500;
 
-// The bundled corpus. Three sample sessions today, forty-four once the real
-// notes are ingested -- read from the answers rather than hardcoded would be
-// better, but the backend does not expose a corpus size and inventing an
-// endpoint for a subtitle is not worth it.
-const CORPUS_LABEL = "Course-grounded";
+// How long a deleted conversation can be brought back before the delete is
+// actually sent to the server.
+const UNDO_MS = 6000;
 
 const STARTERS = [
   "Why does my container ignore SIGTERM?",
@@ -24,9 +23,29 @@ const STARTERS = [
   "What does exit code 137 mean?",
 ];
 
+function corpusLabel(kb) {
+  if (!kb) return "";
+  if (kb.mode === "hosted") return "Hosted · course notes";
+  const n = kb.session_count ?? 0;
+  return `Local · ${n} session${n === 1 ? "" : "s"}`;
+}
+
+function corpusFact(kb) {
+  if (!kb) return "";
+  if (kb.mode === "hosted") return "Hosted knowledge base · answers name their session";
+  const n = kb.session_count ?? 0;
+  return `${n} session${n === 1 ? "" : "s"} in the knowledge base`;
+}
+
+function dropTrailingLocalQuestion(list) {
+  const last = list[list.length - 1];
+  return last && last.role === "user" && String(last.id).startsWith("local-") ? list.slice(0, -1) : list;
+}
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [kb, setKb] = useState(null);
 
   const [conversations, setConversations] = useState([]);
   const [activeId, setActiveId] = useState(null);
@@ -36,16 +55,20 @@ export default function App() {
   const [streamingText, setStreamingText] = useState(null);
   const [streamingCites, setStreamingCites] = useState([]);
   const [stage, setStage] = useState(null); // "searching" | "writing" | null
-  const [error, setError] = useState(null);
+  const [failed, setFailed] = useState(null); // { question, message } | null
   const [sending, setSending] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const [headerRenaming, setHeaderRenaming] = useState(false);
+  const [headerTitle, setHeaderTitle] = useState("");
 
-  // Kept in a ref because the setStreamingText callback below runs after
-  // render and would otherwise close over a stale citations value.
+  // Live values the async send() needs after awaits, without stale closures.
+  const textRef = useRef("");
   const citesRef = useRef([]);
-  useEffect(() => {
-    citesRef.current = streamingCites;
-  }, [streamingCites]);
+  const nearRef = useRef([]);
+  const abortRef = useRef(null);
+  const pendingRef = useRef(null);
+  const headerInputRef = useRef(null);
 
   useEffect(() => {
     api
@@ -54,6 +77,11 @@ export default function App() {
       .catch(() => setUser(null))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    api.kb().then(setKb).catch(() => setKb(null));
+  }, [user]);
 
   const refreshConversations = useCallback(async () => {
     const list = await api.listConversations();
@@ -71,6 +99,8 @@ export default function App() {
   }, [user, refreshConversations]);
 
   useEffect(() => {
+    setFailed(null);
+    setHeaderRenaming(false);
     if (!activeId) {
       setMessages([]);
       return;
@@ -78,27 +108,90 @@ export default function App() {
     api.listMessages(activeId).then(setMessages).catch(() => setMessages([]));
   }, [activeId]);
 
+  useEffect(() => {
+    if (headerRenaming) headerInputRef.current?.select();
+  }, [headerRenaming]);
+
+  /* ---------------------------------------------------- conversations -- */
+
   async function newConversation() {
     const created = await api.createConversation();
     setConversations((prev) => [created, ...prev]);
     setActiveId(created.id);
     setMessages([]);
-    setError(null);
     setNavOpen(false);
     return created.id;
   }
 
-  async function removeConversation(id) {
-    await api.deleteConversation(id);
-    setConversations((prev) => prev.filter((c) => c.id !== id));
-    if (activeId === id) setActiveId(null);
+  function flushPendingDelete() {
+    const pending = pendingRef.current;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    api.deleteConversation(pending.conversation.id).catch(() => {});
+    pendingRef.current = null;
+    setPendingDelete(null);
   }
+
+  function removeConversation(id) {
+    const target = conversations.find((c) => c.id === id);
+    if (!target) return;
+
+    // Only one undo at a time; a second delete commits the first.
+    flushPendingDelete();
+
+    const rest = conversations.filter((c) => c.id !== id);
+    setConversations(rest);
+    if (activeId === id) setActiveId(rest[0]?.id ?? null);
+
+    const timer = setTimeout(() => {
+      api.deleteConversation(id).catch(() => {});
+      pendingRef.current = null;
+      setPendingDelete(null);
+    }, UNDO_MS);
+
+    const pending = { conversation: target, timer };
+    pendingRef.current = pending;
+    setPendingDelete(pending);
+  }
+
+  function undoDelete() {
+    const pending = pendingRef.current;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingRef.current = null;
+    setPendingDelete(null);
+    setConversations((prev) =>
+      [...prev, pending.conversation].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+    );
+    setActiveId(pending.conversation.id);
+  }
+
+  async function renameConversation(id, title) {
+    const value = title.trim().slice(0, 120);
+    if (!value) return;
+    const updated = await api.renameConversation(id, value);
+    setConversations((prev) => prev.map((c) => (c.id === id ? updated : c)));
+  }
+
+  function startHeaderRename() {
+    const current = conversations.find((c) => c.id === activeId);
+    if (!current) return;
+    setHeaderTitle(current.title);
+    setHeaderRenaming(true);
+  }
+
+  async function commitHeaderRename() {
+    setHeaderRenaming(false);
+    if (activeId && headerTitle.trim()) await renameConversation(activeId, headerTitle);
+  }
+
+  /* -------------------------------------------------------------- ask -- */
 
   async function send(text) {
     const question = (text ?? draft).trim();
     if (!question || question.length > MAX_QUESTION || sending) return;
 
-    setError(null);
+    setFailed(null);
     setSending(true);
     setStage("searching");
     setDraft("");
@@ -113,84 +206,193 @@ export default function App() {
     ]);
     setStreamingText(null);
     setStreamingCites([]);
+    textRef.current = "";
+    citesRef.current = [];
+    nearRef.current = [];
 
-    let failed = false;
+    const controller = new AbortController();
+    abortRef.current = controller;
 
-    await askQuestion(conversationId, question, {
-      onSources: (citations) => {
-        setStreamingCites(citations);
-        setStage("writing");
-      },
-      onToken: (token) => {
-        setStage(null);
-        setStreamingText((prev) => (prev ?? "") + token);
-      },
-      onError: (message) => {
-        failed = true;
-        setError(message);
-      },
-    });
+    let failure = null;
+    let aborted = false;
 
-    setStreamingText((finalText) => {
-      if (!failed && finalText) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `local-a-${Date.now()}`,
-            role: "assistant",
-            content: finalText,
-            citations: citesRef.current,
+    try {
+      await askQuestion(
+        conversationId,
+        question,
+        {
+          onSources: (citations, near) => {
+            citesRef.current = citations;
+            nearRef.current = near;
+            setStreamingCites(citations);
+            setStage("writing");
           },
-        ]);
-      }
-      return null;
-    });
+          onToken: (token) => {
+            setStage(null);
+            textRef.current += token;
+            setStreamingText(textRef.current);
+          },
+          onError: (message) => {
+            failure = message;
+          },
+        },
+        controller.signal
+      );
+    } catch (err) {
+      if (err?.name === "AbortError") aborted = true;
+      else failure = err?.message || "Something went wrong.";
+    }
 
+    abortRef.current = null;
+    const finalText = textRef.current;
+
+    if (failure) {
+      setFailed({ question, message: failure });
+    } else if (finalText) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `local-a-${Date.now()}`,
+          role: "assistant",
+          content: finalText,
+          citations: citesRef.current,
+          near: nearRef.current,
+          stopped: aborted,
+        },
+      ]);
+    } else if (aborted) {
+      setFailed({ question, message: "Stopped before an answer arrived." });
+    }
+
+    setStreamingText(null);
     setStage(null);
     setSending(false);
     refreshConversations().catch(() => {});
   }
 
+  function stop() {
+    abortRef.current?.abort();
+  }
+
+  function retryFailed() {
+    const question = failed?.question;
+    if (!question) return;
+    setFailed(null);
+    setMessages(dropTrailingLocalQuestion);
+    send(question);
+  }
+
+  function editFailed() {
+    const question = failed?.question;
+    if (!question) return;
+    setFailed(null);
+    setMessages(dropTrailingLocalQuestion);
+    setDraft(question);
+    setTimeout(() => document.querySelector(".composer-box textarea")?.focus(), 0);
+  }
+
   async function signOut() {
+    flushPendingDelete();
     await api.logout().catch(() => {});
     setUser(null);
+    setKb(null);
     setConversations([]);
     setActiveId(null);
     setMessages([]);
   }
 
+  /* ----------------------------------------------------------- render -- */
+
   if (loading) return null;
   if (!user) return <Auth onSignedIn={setUser} api={api} />;
 
   const activeTitle = conversations.find((c) => c.id === activeId)?.title;
-  const isEmpty = messages.length === 0 && streamingText === null && !stage;
+  const isEmpty = messages.length === 0 && streamingText === null && !stage && !failed;
+  const sessions = kb?.sessions ?? [];
 
   return (
     <div className="shell">
-      {navOpen && <button className="scrim" onClick={() => setNavOpen(false)} aria-label="Close navigation" />}
+      {navOpen && (
+        <button className="scrim" onClick={() => setNavOpen(false)} aria-label="Close navigation" />
+      )}
 
       <Sidebar
         open={navOpen}
         onClose={() => setNavOpen(false)}
         user={user}
+        corpusLabel={corpusLabel(kb)}
         conversations={conversations}
         activeId={activeId}
         onSelect={setActiveId}
         onCreate={newConversation}
         onDelete={removeConversation}
+        onRename={renameConversation}
         onSignOut={signOut}
+        pendingDelete={pendingDelete}
+        onUndo={undoDelete}
       />
 
       <main className="main">
         <header className="topbar">
-          <button className="menu" onClick={() => setNavOpen(true)} aria-label="Open navigation">
+          <button className="nav-toggle" onClick={() => setNavOpen(true)} aria-label="Open navigation">
             <PanelLeft size={16} strokeWidth={2} />
           </button>
-          <span className="title">{activeTitle || "New conversation"}</span>
-          <span className="corpus">
-            <span className="dot" aria-hidden="true" />
-            {CORPUS_LABEL}
-          </span>
+
+          {headerRenaming ? (
+            <input
+              ref={headerInputRef}
+              className="title-edit"
+              value={headerTitle}
+              onChange={(e) => setHeaderTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitHeaderRename();
+                }
+                if (e.key === "Escape") setHeaderRenaming(false);
+              }}
+              onBlur={commitHeaderRename}
+              aria-label="Conversation title"
+              maxLength={120}
+            />
+          ) : (
+            <span
+              className="title"
+              onDoubleClick={() => activeId && startHeaderRename()}
+              title={activeId ? "Double-click to rename" : undefined}
+            >
+              {activeTitle || "New conversation"}
+            </span>
+          )}
+
+          {activeId && !headerRenaming && (
+            <Menu
+              label="Conversation options"
+              className="head-menu"
+              items={[
+                { label: "Rename", icon: <Pencil size={13} strokeWidth={2} />, onSelect: startHeaderRename },
+                {
+                  label: "Delete",
+                  icon: <Trash2 size={13} strokeWidth={2} />,
+                  destructive: true,
+                  onSelect: () => removeConversation(activeId),
+                },
+              ]}
+            />
+          )}
+
+          {kb && (
+            <span
+              className="corpus"
+              title={
+                kb.mode === "local"
+                  ? "Course notes indexed on this machine"
+                  : "Course notes served by the NKS knowledge base"
+              }
+            >
+              {corpusLabel(kb)}
+            </span>
+          )}
         </header>
 
         <Thread resetScroll={isEmpty ? activeId || "new" : null}>
@@ -198,11 +400,18 @@ export default function App() {
             <div className="empty">
               <h1>Kora</h1>
               <p>Ask your course anything.</p>
-              <div className="meta">
-                <span>Course sessions</span>
-                <span className="sep" aria-hidden="true" />
-                <span>Answers cite their source</span>
-              </div>
+              <div className="meta">{corpusFact(kb)}</div>
+
+              {sessions.length > 0 && (
+                <div className="session-tags">
+                  {sessions.map((s) => (
+                    <span className="stag" key={s.session_number}>
+                      <b>{s.session_number}</b>
+                      {s.session_title}
+                    </span>
+                  ))}
+                </div>
+              )}
 
               <div className="starters">
                 {STARTERS.map((s) => (
@@ -219,7 +428,14 @@ export default function App() {
                 m.role === "user" ? (
                   <UserTurn key={m.id} content={m.content} />
                 ) : (
-                  <AssistantTurn key={m.id} content={m.content} citations={m.citations} />
+                  <AssistantTurn
+                    key={m.id}
+                    content={m.content}
+                    citations={m.citations}
+                    near={m.near}
+                    sessions={sessions}
+                    stopped={m.stopped}
+                  />
                 )
               )}
 
@@ -228,24 +444,20 @@ export default function App() {
               {streamingText !== null && (
                 <AssistantTurn content={streamingText} citations={streamingCites} streaming />
               )}
+
+              {failed && <ErrorTurn message={failed.message} onRetry={retryFailed} onEdit={editFailed} />}
             </>
           )}
 
-          {error && (
-            <div className="alert" role="alert" style={{ marginTop: 18 }}>
-              <AlertCircle size={14} strokeWidth={2} />
-              <span>{error}</span>
-            </div>
-          )}
-
-          {!isEmpty && <ThreadAnchor deps={[messages.length, streamingText, stage, error]} />}
+          {!isEmpty && <ThreadAnchor deps={[messages.length, streamingText, stage, failed]} />}
         </Thread>
 
         <Composer
           value={draft}
           onChange={setDraft}
           onSubmit={() => send()}
-          disabled={sending}
+          onStop={stop}
+          busy={sending}
           maxLength={MAX_QUESTION}
         />
       </main>

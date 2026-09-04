@@ -7,7 +7,6 @@ async function request(path, options = {}) {
   const response = await fetch(path, {
     ...options,
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    // Send and accept the session cookie.
     credentials: "same-origin",
   });
 
@@ -45,9 +44,15 @@ export const api = {
 
   me: () => request("/api/auth/me"),
 
+  // What Kora knows: mode, session count, and (local mode only) the sessions.
+  kb: () => request("/api/kb"),
+
   listConversations: () => request("/api/chat/conversations"),
 
   createConversation: () => request("/api/chat/conversations", { method: "POST" }),
+
+  renameConversation: (id, title) =>
+    request(`/api/chat/conversations/${id}`, { method: "PATCH", body: JSON.stringify({ title }) }),
 
   deleteConversation: (id) => request(`/api/chat/conversations/${id}`, { method: "DELETE" }),
 
@@ -61,6 +66,9 @@ export const api = {
  * GET requests, and the question needs a POST body. The trade is that the
  * server-sent-events framing has to be parsed by hand, which is the loop
  * below.
+ *
+ * Aborting the signal rejects with an AbortError; the caller decides what to
+ * do with whatever text had arrived by then.
  */
 export async function askQuestion(conversationId, question, handlers, signal) {
   const response = await fetch(`/api/chat/conversations/${conversationId}/messages`, {
@@ -111,7 +119,7 @@ export async function askQuestion(conversationId, question, handlers, signal) {
         continue;
       }
 
-      if (name === "sources") handlers.onSources?.(parsed.citations || []);
+      if (name === "sources") handlers.onSources?.(parsed.citations || [], parsed.near || []);
       else if (name === "token") handlers.onToken?.(parsed.text || "");
       else if (name === "error") handlers.onError?.(parsed.message);
       else if (name === "done") handlers.onDone?.(parsed);

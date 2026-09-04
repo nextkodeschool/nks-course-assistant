@@ -94,6 +94,10 @@ COURSE NOTES:
 class RetrievalOutcome:
     chunks: list[Chunk]
     grounded: bool
+    # The best matches when nothing cleared the threshold. Not good enough to
+    # answer from, but good enough to tell a student where the nearest
+    # material is -- which turns a refusal into a pointer.
+    near: list[Chunk]
 
 
 def _build_context(chunks: list[Chunk]) -> str:
@@ -111,6 +115,11 @@ def citations_for(chunks: list[Chunk]) -> list[dict]:
                 "session_number": chunk.session_number,
                 "session_title": chunk.session_title,
                 "score": chunk.score,
+                # The passage the answer was drawn from. Already capped at 800
+                # characters by the retriever, which is the same cap the hosted
+                # contract applies -- so showing it to the student reveals
+                # nothing the contract does not already hand to the client.
+                "text": chunk.text,
             }
     return list(seen.values())
 
@@ -149,7 +158,11 @@ async def retrieve(
     # Below the threshold the chunks are dropped rather than passed along
     # weakly. Handing a model text it has already been judged irrelevant is
     # how you get a fluent answer built on the wrong page.
-    return RetrievalOutcome(chunks=chunks if grounded else [], grounded=grounded)
+    return RetrievalOutcome(
+        chunks=chunks if grounded else [],
+        grounded=grounded,
+        near=[] if grounded else chunks,
+    )
 
 
 def build_messages(

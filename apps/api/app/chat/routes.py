@@ -46,6 +46,10 @@ class MessageOut(BaseModel):
     created_at: datetime
 
 
+class RenameBody(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+
+
 class AskBody(BaseModel):
     question: str = Field(min_length=1, max_length=orchestrator.MAX_QUESTION_CHARS)
     # Present from day one because it is in the frozen contract, even though
@@ -102,6 +106,14 @@ async def list_messages(conversation_id: UUID, user: CurrentUser, db: Db):
     ).scalars().all()
 
 
+@router.patch("/conversations/{conversation_id}", response_model=ConversationOut)
+async def rename_conversation(conversation_id: UUID, body: RenameBody, user: CurrentUser, db: Db):
+    conversation = await _owned_conversation(db, conversation_id, user.id)
+    conversation.title = body.title.strip()
+    await db.flush()
+    return conversation
+
+
 @router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_conversation(conversation_id: UUID, user: CurrentUser, db: Db):
     conversation = await _owned_conversation(db, conversation_id, user.id)
@@ -153,7 +165,16 @@ async def ask(conversation_id: UUID, body: AskBody, user: CurrentUser, db: Db):
 
                 if not outcome.grounded:
                     # Step 3. No LLM call happens on this path at all.
-                    yield _sse("sources", {"citations": []})
+                    #
+                    # Near misses are sent without their passage text: they
+                    # were judged not relevant, so quoting them would invite
+                    # reading meaning into noise. Session numbers are enough
+                    # to say "look here instead".
+                    near = [
+                        {k: v for k, v in c.items() if k != "text"}
+                        for c in orchestrator.citations_for(outcome.near)[:3]
+                    ]
+                    yield _sse("sources", {"citations": [], "near": near})
                     for word in orchestrator.NO_NOTES_REPLY.split(" "):
                         yield _sse("token", {"text": word + " "})
                     stream_db.add(
@@ -164,6 +185,11 @@ async def ask(conversation_id: UUID, body: AskBody, user: CurrentUser, db: Db):
                             citations=[],
                         )
                     )
+                    # A refused first question still names the conversation.
+                    # Without this, every conversation that opened with an
+                    # off-topic question stayed "New conversation" forever
+                    # and the sidebar filled with identical rows.
+                    await _maybe_title(stream_db, conversation_id, question)
                     await stream_db.commit()
                     yield _sse("done", {"grounded": False})
                     return

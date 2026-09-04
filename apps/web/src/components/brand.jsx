@@ -1,22 +1,20 @@
-import { Disc } from "lucide-react";
-
 /**
  * Kora wordmark, in Next Kode School's brand voice.
  *
- * The school's site sets its name in two weights with the second word in
- * gold, over a spaced-out uppercase "SCHOOL" line. The same structure is
- * reused here so Kora reads as part of that family rather than as an
- * unrelated product: the name, then the school beneath it in mono caps with
- * "Kode" carrying the gold.
+ * The mark is the school's own: gold braces around an N and a K whose stroke
+ * is an upward arrow. It is served in two versions because the N is white on
+ * the dark file and dark on the light one; CSS shows whichever matches the
+ * theme, so only the visible image is fetched.
  *
- * Deliberately no gradient, no glow, no oversized logo. The gold appears
- * twice on this element and nowhere else in the sidebar.
+ * Beneath the name, the school's structure is reused -- "Kode" carries the
+ * gold, "SCHOOL" is spaced caps -- so Kora reads as part of that family.
  */
 export function Wordmark({ showSchool = true }) {
   return (
     <div className="wordmark">
-      <span className="mark">
-        <Disc size={15} strokeWidth={2} />
+      <span className="mark" aria-hidden="true">
+        <img className="on-dark" src="/brand/logo-dark.png" alt="" />
+        <img className="on-light" src="/brand/logo-light.png" alt="" />
       </span>
       <span className="names">
         <span className="name">Kora</span>
