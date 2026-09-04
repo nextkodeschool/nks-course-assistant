@@ -150,6 +150,10 @@ async def ask(conversation_id: UUID, body: AskBody, user: CurrentUser, db: Db):
 
     user_message = MessageRow(conversation_id=conversation_id, role="user", content=question)
     db.add(user_message)
+    # The first question names the conversation, whatever happens next --
+    # answered, refused, failed or stopped. Titling only on success left
+    # every other outcome sitting in the sidebar as "New conversation".
+    await _maybe_title(db, conversation_id, question)
     await db.commit()
     user_message_id = user_message.id
 

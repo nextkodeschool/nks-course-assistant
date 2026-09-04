@@ -1,17 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { LogOut, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import {
+  LogOut,
+  MessagesSquare,
+  PanelLeftClose,
+  Pencil,
+  Search,
+  SquarePen,
+  Trash2,
+  X,
+} from "lucide-react";
 import { Wordmark } from "./brand";
 import { Menu } from "./menu";
 
 /**
  * Conversation navigation.
  *
- * Kept to what the product actually has: start a conversation, find an old
- * one, switch, rename, delete, sign out. No settings panel, no usage meter.
+ * One sidebar in two widths. Expanded: wordmark, new conversation, the
+ * grouped list, account. Collapsed: the same things as a rail of icons,
+ * where the mark, the conversations icon and the avatar all expand it
+ * again. Nothing is exclusive to one state.
  *
- * Conversations are grouped by when they started, because "the one from
- * Tuesday" is how people remember them. Search appears only once there are
- * enough that scanning is slower than typing.
+ * The rows are dense on purpose -- 30px, no card, one line -- because a
+ * student will have dozens of these by mid-course and the list has to
+ * hold them without scrolling every few items.
  */
 
 const SEARCH_THRESHOLD = 6;
@@ -28,6 +39,8 @@ function groupOf(iso) {
 }
 
 export function Sidebar({
+  collapsed,
+  onToggle,
   open,
   onClose,
   user,
@@ -37,19 +50,26 @@ export function Sidebar({
   onSelect,
   onCreate,
   onDelete,
-  onRename,
   onSignOut,
   pendingDelete,
   onUndo,
+  renamingId,
+  onStartRename,
+  onCommitRename,
+  onCancelRename,
 }) {
   const [query, setQuery] = useState("");
-  const [renamingId, setRenamingId] = useState(null);
   const [renameValue, setRenameValue] = useState("");
   const renameRef = useRef(null);
 
   useEffect(() => {
-    if (renamingId) renameRef.current?.select();
-  }, [renamingId]);
+    if (!renamingId) return;
+    const current = conversations.find((c) => c.id === renamingId);
+    setRenameValue(current?.title ?? "");
+    // Focus after the input has rendered.
+    const t = setTimeout(() => renameRef.current?.select(), 0);
+    return () => clearTimeout(t);
+  }, [renamingId, conversations]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -66,42 +86,62 @@ export function Sidebar({
     return GROUPS.filter((g) => byGroup.has(g)).map((g) => [g, byGroup.get(g)]);
   }, [filtered]);
 
-  function startRename(c) {
-    setRenamingId(c.id);
-    setRenameValue(c.title);
-  }
-
-  async function commitRename() {
-    const id = renamingId;
-    const value = renameValue.trim();
-    setRenamingId(null);
-    if (id && value) await onRename(id, value);
-  }
-
   const initials = (user?.email || "?").slice(0, 2).toUpperCase();
+
+  if (collapsed) {
+    return (
+      <aside className="sidebar collapsed" aria-label="Navigation, collapsed">
+        <div className="sidebar-head">
+          <button className="rail-btn brand-btn" onClick={onToggle} aria-label="Expand sidebar" title="Expand sidebar">
+            <Wordmark compact />
+          </button>
+        </div>
+        <div className="sidebar-actions">
+          <button className="rail-btn" onClick={onCreate} aria-label="New conversation" title="New conversation">
+            <SquarePen size={17} strokeWidth={2} />
+          </button>
+          <button className="rail-btn" onClick={onToggle} aria-label="Show conversations" title="Conversations">
+            <MessagesSquare size={17} strokeWidth={2} />
+          </button>
+        </div>
+        <div className="rail-spacer" />
+        <div className="sidebar-foot">
+          <button className="rail-btn avatar" onClick={onToggle} aria-label="Account" title={user?.email}>
+            {initials}
+          </button>
+        </div>
+      </aside>
+    );
+  }
 
   return (
     <aside className={`sidebar ${open ? "open" : ""}`}>
       <div className="sidebar-head">
         <Wordmark />
+        <button className="icon-btn collapse" onClick={onToggle} aria-label="Collapse sidebar" title="Collapse sidebar">
+          <PanelLeftClose size={16} strokeWidth={2} />
+        </button>
+        <button className="icon-btn close-drawer" onClick={onClose} aria-label="Close navigation">
+          <X size={16} strokeWidth={2} />
+        </button>
       </div>
 
       <div className="sidebar-actions">
-        <button className="btn" onClick={onCreate}>
-          <Plus size={14} strokeWidth={2} />
-          New conversation
+        <button className="new-chat" onClick={onCreate}>
+          <SquarePen size={16} strokeWidth={2} />
+          <span>New conversation</span>
         </button>
 
         {conversations.length >= SEARCH_THRESHOLD && (
           <div className="search">
-            <Search size={13} strokeWidth={2} />
+            <Search size={14} strokeWidth={2} />
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Escape") setQuery("");
               }}
-              placeholder="Search conversations"
+              placeholder="Search"
               aria-label="Search conversations"
             />
             {query && (
@@ -120,7 +160,7 @@ export function Sidebar({
 
         {groups.map(([group, items]) => (
           <div className="convo-group" key={group}>
-            <span className="label">
+            <span className="group-label">
               {query ? `${filtered.length} match${filtered.length === 1 ? "" : "es"}` : group}
             </span>
 
@@ -140,11 +180,11 @@ export function Sidebar({
                       onKeyDown={(e) => {
                         if (e.key === "Enter") {
                           e.preventDefault();
-                          commitRename();
+                          onCommitRename(c.id, renameValue);
                         }
-                        if (e.key === "Escape") setRenamingId(null);
+                        if (e.key === "Escape") onCancelRename();
                       }}
-                      onBlur={commitRename}
+                      onBlur={() => onCommitRename(c.id, renameValue)}
                       aria-label="Conversation title"
                       maxLength={120}
                     />
@@ -155,7 +195,7 @@ export function Sidebar({
                         onSelect(c.id);
                         onClose?.();
                       }}
-                      onDoubleClick={() => startRename(c)}
+                      onDoubleClick={() => onStartRename(c.id)}
                       title={`${c.title}\n${new Date(c.created_at).toLocaleString()}`}
                     >
                       {c.title}
@@ -167,7 +207,7 @@ export function Sidebar({
                       label={`Options for ${c.title}`}
                       className="row-menu"
                       items={[
-                        { label: "Rename", icon: <Pencil size={13} strokeWidth={2} />, onSelect: () => startRename(c) },
+                        { label: "Rename", icon: <Pencil size={13} strokeWidth={2} />, onSelect: () => onStartRename(c.id) },
                         {
                           label: "Delete",
                           icon: <Trash2 size={13} strokeWidth={2} />,
@@ -200,8 +240,8 @@ export function Sidebar({
         <span className="mode" title={user?.email}>
           {corpusLabel || user?.email}
         </span>
-        <button className="btn-quiet" onClick={onSignOut} aria-label="Sign out">
-          <LogOut size={14} strokeWidth={2} />
+        <button className="icon-btn" onClick={onSignOut} aria-label="Sign out" title="Sign out">
+          <LogOut size={15} strokeWidth={2} />
         </button>
       </div>
     </aside>

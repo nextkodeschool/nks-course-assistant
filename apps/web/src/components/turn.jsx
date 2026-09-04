@@ -1,27 +1,33 @@
 import { useEffect, useState } from "react";
-import { AlertCircle, BookOpen, ChevronDown, CircleSlash, User } from "lucide-react";
+import { AlertCircle, ArrowRight, BookOpen, ChevronDown, CircleSlash } from "lucide-react";
 import { Markdown } from "./markdown";
 
 /**
- * One turn in the conversation.
+ * Turns.
  *
- * Turns are separated by a hairline rule rather than wrapped in cards. A
- * chat where every message sits in its own rounded box wastes horizontal
- * space and flattens the hierarchy; a small mono role label and a rule does
- * the same job with far less furniture.
+ * A question sits to the right, in a quiet neutral block. An answer starts
+ * from the left edge of the reading column and uses the full measure, with
+ * a small gold mark beside it. Position carries the role; there are no
+ * "You" / "Kora" labels on screen, only for screen readers.
  */
 
-export function Turn({ role, children }) {
-  const isUser = role === "user";
+export function UserTurn({ content }) {
   return (
-    <article className={`turn ${role}`}>
-      <div className="turn-role">
-        <span className="glyph">
-          {isUser ? <User size={13} strokeWidth={2} /> : <BookOpen size={13} strokeWidth={2} />}
-        </span>
-        <span className="who">{isUser ? "You" : "Kora"}</span>
-      </div>
-      {children}
+    <article className="turn user">
+      <span className="sr-only">You asked:</span>
+      <div className="bubble">{content}</div>
+    </article>
+  );
+}
+
+function AssistantFrame({ children }) {
+  return (
+    <article className="turn assistant">
+      <span className="glyph" aria-hidden="true">
+        <BookOpen size={15} strokeWidth={2} />
+      </span>
+      <span className="sr-only">Kora:</span>
+      <div className="turn-body">{children}</div>
     </article>
   );
 }
@@ -30,26 +36,12 @@ function focusComposer() {
   document.querySelector(".composer-box textarea")?.focus();
 }
 
-function SessionTags({ sessions }) {
-  return (
-    <div className="session-tags">
-      {sessions.map((s) => (
-        <span className="stag" key={s.session_number}>
-          <b>{s.session_number}</b>
-          {s.session_title}
-        </span>
-      ))}
-    </div>
-  );
-}
-
 /**
  * How well a passage matched, in a form a student can read.
  *
- * The raw cosine score means nothing to the audience -- "0.67" is not
- * information. Three segments and a name are. The bands sit above the
- * refusal threshold (0.48), so the weakest thing shown is still a real
- * match; anything below never reaches this component.
+ * The raw cosine score means nothing to the audience; three segments and a
+ * name do. The bands sit above the refusal threshold (0.48), so the weakest
+ * thing shown is still a real match.
  */
 function strengthOf(score) {
   if (typeof score !== "number") return null;
@@ -61,13 +53,11 @@ function strengthOf(score) {
 /**
  * Where an answer came from.
  *
- * This is the product's promise made visible, so it is a real block with the
- * brand rule down its edge. Each row expands to the passage that was
- * actually retrieved -- the same text the model was given -- which is the
- * honest link back to the notes. In hosted mode the full session is not
- * retrievable by design, so the passage is the whole of what can be shown.
+ * A bordered block with the brand rule down its edge. Each row expands to
+ * the passage that was actually retrieved -- the same text the model was
+ * given -- and, in local mode, on to the whole session.
  */
-export function Sources({ citations = [] }) {
+export function Sources({ citations = [], canOpen = false, onOpenSession }) {
   const [open, setOpen] = useState(() => new Set());
   if (!citations.length) return null;
 
@@ -79,12 +69,13 @@ export function Sources({ citations = [] }) {
     });
 
   return (
-    <div className="sources">
+    <section className="sources" aria-label="Sources">
       <div className="sources-head">
-        <span className="label">
+        <span className="label">Source</span>
+        <span className="hint">
           From {citations.length} session{citations.length > 1 ? "s" : ""}
+          {citations.length > 1 && " · most relevant first"}
         </span>
-        {citations.length > 1 && <span className="hint">most relevant first</span>}
       </div>
 
       {citations.map((c) => {
@@ -107,58 +98,70 @@ export function Sources({ citations = [] }) {
                   <i className={strength.level >= 3 ? "on" : ""} />
                 </span>
               )}
-              <ChevronDown size={13} strokeWidth={2} className="chev" aria-hidden="true" />
+              <ChevronDown size={14} strokeWidth={2} className="chev" aria-hidden="true" />
             </button>
 
             {isOpen && (
               <div className="passage">
                 {c.text ? (
-                  // The notes are markdown, so the passage is rendered as
-                  // markdown: a fenced block in the source shows as code, not
-                  // as three backticks.
-                  <div className="passage-md">
+                  <blockquote className="passage-quote">
                     <Markdown>{c.text}</Markdown>
-                  </div>
+                  </blockquote>
                 ) : (
-                  <p className="none">The passage was not stored for this answer.</p>
+                  <p className="passage-none">The passage was not stored for this answer.</p>
                 )}
-                <span className="passage-note">Retrieved from the course notes for this answer.</span>
+                <div className="passage-foot">
+                  <span className="passage-note">Retrieved from the course notes for this answer.</span>
+                  {canOpen && (
+                    <button type="button" className="text-link" onClick={() => onOpenSession?.(c.session_number)}>
+                      Open session <ArrowRight size={13} strokeWidth={2} />
+                    </button>
+                  )}
+                </div>
               </div>
             )}
           </div>
         );
       })}
-    </div>
+    </section>
   );
 }
 
 /**
  * The "we never taught this" answer.
  *
- * Deliberately does not look like a grounded answer: dashed border, no
- * source block. The constraint is stated once, plainly, and followed by
- * something to do about it -- rephrase, look at what is covered, or start
- * from the nearest sessions when retrieval found some.
+ * Distinct from a grounded answer: dashed border, no source block. The
+ * constraint is stated once and followed by something to do -- the nearest
+ * sessions when retrieval found some, rephrasing, or the session list.
  */
-export function NotCovered({ near = [], sessions = [] }) {
-  const [showSessions, setShowSessions] = useState(false);
-
+export function NotCovered({ near = [], canOpen = false, onOpenSession, onShowSessions }) {
   return (
     <div className="uncovered">
       <div className="uncovered-head">
-        <CircleSlash size={13} strokeWidth={2} />
+        <CircleSlash size={14} strokeWidth={2} />
         <span className="label">Not covered in the course</span>
       </div>
 
-      <p>
-        This topic does not appear in the course sessions Kora has. Kora answers only from those
-        sessions and will not fall back to general knowledge.
-      </p>
+      <p>This topic isn't covered in the available course sessions.</p>
 
       {near.length > 0 && (
         <div className="near">
-          <span className="near-label">Closest sessions</span>
-          <SessionTags sessions={near} />
+          <span className="near-label">Closest topics</span>
+          <ul className="near-list">
+            {near.map((n) =>
+              canOpen ? (
+                <li key={n.session_number}>
+                  <button type="button" className="text-link" onClick={() => onOpenSession?.(n.session_number)}>
+                    Session {n.session_number} · {n.session_title}
+                  </button>
+                </li>
+              ) : (
+                <li key={n.session_number}>
+                  Session {n.session_number} · {n.session_title}
+                </li>
+              )
+            )}
+          </ul>
         </div>
       )}
 
@@ -166,49 +169,34 @@ export function NotCovered({ near = [], sessions = [] }) {
         <button type="button" className="btn" onClick={focusComposer}>
           Try rephrasing
         </button>
-        {sessions.length > 0 && (
-          <button
-            type="button"
-            className="btn"
-            onClick={() => setShowSessions((s) => !s)}
-            aria-expanded={showSessions}
-          >
-            {showSessions ? "Hide sessions" : "See what's covered"}
+        {onShowSessions && (
+          <button type="button" className="btn" onClick={onShowSessions}>
+            See what's covered
           </button>
         )}
       </div>
-
-      {showSessions && <SessionTags sessions={sessions} />}
     </div>
   );
 }
 
 /**
- * A question that could not be answered.
- *
- * Rendered in the assistant's slot rather than as a floating alert, so the
- * failure sits under the question it belongs to. Retry re-sends it; Edit puts
- * it back in the composer. Either way the student does not retype.
+ * A question that could not be answered. Sits in Kora's slot under the
+ * question it belongs to; the draft has already been put back in the
+ * composer, so Retry is the only action needed here.
  */
-export function ErrorTurn({ message, onRetry, onEdit }) {
+export function ErrorTurn({ message, onRetry }) {
   return (
-    <Turn role="assistant">
+    <AssistantFrame>
       <div className="failed" role="alert">
-        <div className="failed-head">
-          <AlertCircle size={13} strokeWidth={2} />
-          <span className="label">Could not answer</span>
-        </div>
-        <p>{message}</p>
+        <p className="failed-title">Couldn't answer this question.</p>
+        {message && <p className="failed-detail">{message}</p>}
         <div className="actions">
           <button type="button" className="btn" onClick={onRetry}>
             Retry
           </button>
-          <button type="button" className="btn" onClick={onEdit}>
-            Edit question
-          </button>
         </div>
       </div>
-    </Turn>
+    </AssistantFrame>
   );
 }
 
@@ -216,46 +204,37 @@ export function AssistantTurn({
   content,
   citations,
   near = [],
-  sessions = [],
+  canOpen = false,
+  onOpenSession,
+  onShowSessions,
   streaming = false,
   stopped = false,
 }) {
-  // A grounded answer always carries citations; the no-notes reply always has
-  // none. That is what distinguishes the two in stored history as well as
-  // mid-stream, without needing a new field from the backend.
+  // A grounded answer always carries citations; the no-notes reply never
+  // does. That distinguishes the two in stored history and mid-stream alike.
   const uncovered = !streaming && Array.isArray(citations) && citations.length === 0;
 
   if (uncovered) {
     return (
-      <Turn role="assistant">
-        <NotCovered near={near} sessions={sessions} />
-      </Turn>
+      <AssistantFrame>
+        <NotCovered near={near} canOpen={canOpen} onOpenSession={onOpenSession} onShowSessions={onShowSessions} />
+      </AssistantFrame>
     );
   }
 
   return (
-    <Turn role="assistant">
+    <AssistantFrame>
       <div className="turn-text">
         <Markdown>{content}</Markdown>
         {streaming && <span className="caret" aria-hidden="true" />}
       </div>
       {stopped && <div className="stopped">Stopped before the answer finished.</div>}
-      <Sources citations={citations} />
-    </Turn>
-  );
-}
-
-export function UserTurn({ content }) {
-  return (
-    <Turn role="user">
-      <div className="turn-text">{content}</div>
-    </Turn>
+      <Sources citations={citations} canOpen={canOpen} onOpenSession={onOpenSession} />
+    </AssistantFrame>
   );
 }
 
 export function Thinking({ stage }) {
-  // Honest about the wait. A local model on CPU can sit in "writing" for
-  // half a minute, and with no explanation that reads as hung.
   const [slow, setSlow] = useState(false);
   useEffect(() => {
     setSlow(false);
@@ -264,7 +243,7 @@ export function Thinking({ stage }) {
   }, [stage]);
 
   return (
-    <Turn role="assistant">
+    <AssistantFrame>
       <div className="thinking" role="status" aria-live="polite">
         <span className="dots" aria-hidden="true">
           <i />
@@ -272,10 +251,10 @@ export function Thinking({ stage }) {
           <i />
         </span>
         <span>{stage === "writing" ? "Writing from the notes" : "Searching the course notes"}</span>
-        {slow && stage === "writing" && (
-          <span className="slow">A local model on CPU can take a while.</span>
-        )}
+        {slow && stage === "writing" && <span className="slow">A local model on CPU can take a while.</span>}
       </div>
-    </Turn>
+    </AssistantFrame>
   );
 }
+
+export { AlertCircle };

@@ -47,6 +47,9 @@ export const api = {
   // What Kora knows: mode, session count, and (local mode only) the sessions.
   kb: () => request("/api/kb"),
 
+  // A whole session, in order. Local mode only; hosted mode returns 404.
+  kbSession: (sessionNumber) => request(`/api/kb/sessions/${sessionNumber}`),
+
   listConversations: () => request("/api/chat/conversations"),
 
   createConversation: () => request("/api/chat/conversations", { method: "POST" }),

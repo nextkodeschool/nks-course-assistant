@@ -150,6 +150,10 @@ class KbChunk(Base):
     session_number: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     session_title: Mapped[str] = mapped_column(String(300), nullable=False)
     topic: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Order of the chunk within its session, so a whole session can be read
+    # back in the order it was written. Nullable because rows indexed before
+    # this column existed have no position; they sort last.
+    position: Mapped[int | None] = mapped_column(Integer, nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIMENSIONS), nullable=False)
     created_at: Mapped[datetime] = mapped_column(

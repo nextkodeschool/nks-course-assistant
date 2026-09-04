@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowRight, PanelLeft, Pencil, Trash2 } from "lucide-react";
+import { PanelLeft, Pencil, Trash2 } from "lucide-react";
 import { api, askQuestion } from "./api";
 import { Auth } from "./components/auth";
 import { Composer } from "./components/composer";
 import { Menu } from "./components/menu";
+import { SessionPanel } from "./components/session-panel";
 import { Sidebar } from "./components/sidebar";
 import { Thread, ThreadAnchor } from "./components/thread";
 import { AssistantTurn, ErrorTurn, Thinking, UserTurn } from "./components/turn";
@@ -16,25 +17,59 @@ const MAX_QUESTION = 500;
 // actually sent to the server.
 const UNDO_MS = 6000;
 
+// The sidebar's collapsed state survives reloads; it is a preference, not a
+// per-visit choice.
+const COLLAPSED_KEY = "kora.sidebar.collapsed";
+
+// Starters are tied to sessions so the first thing a student sees teaches
+// the shape of the product: questions belong to sessions. A starter whose
+// session is not indexed is shown without the session line.
 const STARTERS = [
-  "Why does my container ignore SIGTERM?",
-  "What is the difference between liveness and readiness probes?",
-  "How do I make my Docker builds cache properly?",
-  "What does exit code 137 mean?",
+  { session: 4, question: "Why doesn't SIGTERM reach my process?" },
+  { session: 18, question: "How does Docker layer caching work?" },
+  { session: 31, question: "How do liveness and readiness probes differ?" },
+  { session: 18, question: "Why is my container image so large?" },
 ];
+
+function useMediaQuery(query) {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const onChange = (e) => setMatches(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [query]);
+  return matches;
+}
+
+function readCollapsed() {
+  try {
+    return localStorage.getItem(COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 
 function corpusLabel(kb) {
   if (!kb) return "";
-  if (kb.mode === "hosted") return "Hosted · course notes";
+  if (kb.mode === "hosted") return "Hosted course notes";
   const n = kb.session_count ?? 0;
   return `Local · ${n} session${n === 1 ? "" : "s"}`;
 }
 
+function capitalise(s) {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : "";
+}
+
 function corpusFact(kb) {
   if (!kb) return "";
-  if (kb.mode === "hosted") return "Hosted knowledge base · answers name their session";
-  const n = kb.session_count ?? 0;
-  return `${n} session${n === 1 ? "" : "s"} in the knowledge base`;
+  if (kb.mode === "hosted") return "Hosted course notes";
+  const sessions = kb.sessions ?? [];
+  const n = sessions.length;
+  const first = sessions[0]?.topic;
+  const last = sessions[n - 1]?.topic;
+  const span = first && last && first !== last ? ` · ${capitalise(first)} to ${capitalise(last)}` : "";
+  return `${n} session${n === 1 ? "" : "s"}${span}`;
 }
 
 function dropTrailingLocalQuestion(list) {
@@ -57,10 +92,14 @@ export default function App() {
   const [stage, setStage] = useState(null); // "searching" | "writing" | null
   const [failed, setFailed] = useState(null); // { question, message } | null
   const [sending, setSending] = useState(false);
+
   const [navOpen, setNavOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(readCollapsed);
+  const [panel, setPanel] = useState(null); // { type: "sessions" } | { type: "session", number }
   const [pendingDelete, setPendingDelete] = useState(null);
-  const [headerRenaming, setHeaderRenaming] = useState(false);
-  const [headerTitle, setHeaderTitle] = useState("");
+  const [renamingId, setRenamingId] = useState(null);
+
+  const isMobile = useMediaQuery("(max-width: 860px)");
 
   // Live values the async send() needs after awaits, without stale closures.
   const textRef = useRef("");
@@ -68,7 +107,6 @@ export default function App() {
   const nearRef = useRef([]);
   const abortRef = useRef(null);
   const pendingRef = useRef(null);
-  const headerInputRef = useRef(null);
 
   useEffect(() => {
     api
@@ -100,7 +138,7 @@ export default function App() {
 
   useEffect(() => {
     setFailed(null);
-    setHeaderRenaming(false);
+    setPanel(null);
     if (!activeId) {
       setMessages([]);
       return;
@@ -109,8 +147,12 @@ export default function App() {
   }, [activeId]);
 
   useEffect(() => {
-    if (headerRenaming) headerInputRef.current?.select();
-  }, [headerRenaming]);
+    try {
+      localStorage.setItem(COLLAPSED_KEY, collapsed ? "1" : "0");
+    } catch {
+      // Storage can be unavailable; the preference just does not persist.
+    }
+  }, [collapsed]);
 
   /* ---------------------------------------------------- conversations -- */
 
@@ -136,7 +178,7 @@ export default function App() {
     const target = conversations.find((c) => c.id === id);
     if (!target) return;
 
-    // Only one undo at a time; a second delete commits the first.
+    // One undo at a time; a second delete commits the first.
     flushPendingDelete();
 
     const rest = conversations.filter((c) => c.id !== id);
@@ -166,24 +208,31 @@ export default function App() {
     setActiveId(pending.conversation.id);
   }
 
-  async function renameConversation(id, title) {
+  function startRename(id) {
+    if (collapsed && !isMobile) setCollapsed(false);
+    if (isMobile) setNavOpen(true);
+    setRenamingId(id);
+  }
+
+  async function commitRename(id, title) {
+    setRenamingId(null);
     const value = title.trim().slice(0, 120);
     if (!value) return;
+    const current = conversations.find((c) => c.id === id);
+    if (!current || current.title === value) return;
     const updated = await api.renameConversation(id, value);
     setConversations((prev) => prev.map((c) => (c.id === id ? updated : c)));
   }
 
-  function startHeaderRename() {
-    const current = conversations.find((c) => c.id === activeId);
-    if (!current) return;
-    setHeaderTitle(current.title);
-    setHeaderRenaming(true);
+  /* ---------------------------------------------------------- panels --- */
+
+  const closePanel = useCallback(() => setPanel(null), []);
+
+  function openSession(number) {
+    setPanel(number == null ? { type: "sessions" } : { type: "session", number });
   }
 
-  async function commitHeaderRename() {
-    setHeaderRenaming(false);
-    if (activeId && headerTitle.trim()) await renameConversation(activeId, headerTitle);
-  }
+  const canOpenSessions = kb?.mode === "local" && (kb.sessions?.length ?? 0) > 0;
 
   /* -------------------------------------------------------------- ask -- */
 
@@ -247,7 +296,10 @@ export default function App() {
     const finalText = textRef.current;
 
     if (failure) {
+      // The question stays on screen with the failure under it, and the
+      // draft goes back into the composer so nothing has to be retyped.
       setFailed({ question, message: failure });
+      setDraft(question);
     } else if (finalText) {
       setMessages((prev) => [
         ...prev,
@@ -262,6 +314,7 @@ export default function App() {
       ]);
     } else if (aborted) {
       setFailed({ question, message: "Stopped before an answer arrived." });
+      setDraft(question);
     }
 
     setStreamingText(null);
@@ -279,16 +332,8 @@ export default function App() {
     if (!question) return;
     setFailed(null);
     setMessages(dropTrailingLocalQuestion);
+    if (draft.trim() === question) setDraft("");
     send(question);
-  }
-
-  function editFailed() {
-    const question = failed?.question;
-    if (!question) return;
-    setFailed(null);
-    setMessages(dropTrailingLocalQuestion);
-    setDraft(question);
-    setTimeout(() => document.querySelector(".composer-box textarea")?.focus(), 0);
   }
 
   async function signOut() {
@@ -299,6 +344,7 @@ export default function App() {
     setConversations([]);
     setActiveId(null);
     setMessages([]);
+    setPanel(null);
   }
 
   /* ----------------------------------------------------------- render -- */
@@ -309,14 +355,18 @@ export default function App() {
   const activeTitle = conversations.find((c) => c.id === activeId)?.title;
   const isEmpty = messages.length === 0 && streamingText === null && !stage && !failed;
   const sessions = kb?.sessions ?? [];
+  const sessionTitle = (n) => sessions.find((s) => s.session_number === n)?.session_title;
+  const effectiveCollapsed = collapsed && !isMobile;
 
   return (
-    <div className="shell">
+    <div className={`shell ${effectiveCollapsed ? "collapsed" : ""}`}>
       {navOpen && (
         <button className="scrim" onClick={() => setNavOpen(false)} aria-label="Close navigation" />
       )}
 
       <Sidebar
+        collapsed={effectiveCollapsed}
+        onToggle={() => setCollapsed((c) => !c)}
         open={navOpen}
         onClose={() => setNavOpen(false)}
         user={user}
@@ -326,100 +376,66 @@ export default function App() {
         onSelect={setActiveId}
         onCreate={newConversation}
         onDelete={removeConversation}
-        onRename={renameConversation}
         onSignOut={signOut}
         pendingDelete={pendingDelete}
         onUndo={undoDelete}
+        renamingId={renamingId}
+        onStartRename={startRename}
+        onCommitRename={commitRename}
+        onCancelRename={() => setRenamingId(null)}
       />
 
       <main className="main">
         <header className="topbar">
-          <button className="nav-toggle" onClick={() => setNavOpen(true)} aria-label="Open navigation">
-            <PanelLeft size={16} strokeWidth={2} />
-          </button>
+          <div className="topbar-left">
+            <button className="icon-btn nav-toggle" onClick={() => setNavOpen(true)} aria-label="Open navigation">
+              <PanelLeft size={17} strokeWidth={2} />
+            </button>
+            {/* On a phone the sidebar is not visible, so the title has nowhere
+                else to live. On desktop the sidebar already shows it. */}
+            {isMobile && activeTitle && <span className="mobile-title">{activeTitle}</span>}
+          </div>
 
-          {headerRenaming ? (
-            <input
-              ref={headerInputRef}
-              className="title-edit"
-              value={headerTitle}
-              onChange={(e) => setHeaderTitle(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  commitHeaderRename();
-                }
-                if (e.key === "Escape") setHeaderRenaming(false);
-              }}
-              onBlur={commitHeaderRename}
-              aria-label="Conversation title"
-              maxLength={120}
-            />
-          ) : (
-            <span
-              className="title"
-              onDoubleClick={() => activeId && startHeaderRename()}
-              title={activeId ? "Double-click to rename" : undefined}
-            >
-              {activeTitle || "New conversation"}
-            </span>
-          )}
-
-          {activeId && !headerRenaming && (
-            <Menu
-              label="Conversation options"
-              className="head-menu"
-              items={[
-                { label: "Rename", icon: <Pencil size={13} strokeWidth={2} />, onSelect: startHeaderRename },
-                {
-                  label: "Delete",
-                  icon: <Trash2 size={13} strokeWidth={2} />,
-                  destructive: true,
-                  onSelect: () => removeConversation(activeId),
-                },
-              ]}
-            />
-          )}
-
-          {kb && (
-            <span
-              className="corpus"
-              title={
-                kb.mode === "local"
-                  ? "Course notes indexed on this machine"
-                  : "Course notes served by the NKS knowledge base"
-              }
-            >
-              {corpusLabel(kb)}
-            </span>
-          )}
+          <div className="topbar-right">
+            {activeId && (
+              <Menu
+                label="Conversation options"
+                className="head-menu"
+                items={[
+                  { label: "Rename", icon: <Pencil size={13} strokeWidth={2} />, onSelect: () => startRename(activeId) },
+                  {
+                    label: "Delete",
+                    icon: <Trash2 size={13} strokeWidth={2} />,
+                    destructive: true,
+                    onSelect: () => removeConversation(activeId),
+                  },
+                ]}
+              />
+            )}
+          </div>
         </header>
 
         <Thread resetScroll={isEmpty ? activeId || "new" : null}>
           {isEmpty ? (
             <div className="empty">
               <h1>Kora</h1>
-              <p>Ask your course anything.</p>
-              <div className="meta">{corpusFact(kb)}</div>
-
-              {sessions.length > 0 && (
-                <div className="session-tags">
-                  {sessions.map((s) => (
-                    <span className="stag" key={s.session_number}>
-                      <b>{s.session_number}</b>
-                      {s.session_title}
-                    </span>
-                  ))}
-                </div>
-              )}
+              <p className="lede">Ask your course anything.</p>
+              {kb && <p className="fact">{corpusFact(kb)}</p>}
 
               <div className="starters">
-                {STARTERS.map((s) => (
-                  <button key={s} onClick={() => send(s)}>
-                    <span>{s}</span>
-                    <ArrowRight size={14} strokeWidth={2} />
-                  </button>
-                ))}
+                {STARTERS.map((s) => {
+                  const title = sessionTitle(s.session);
+                  return (
+                    <button key={s.question} onClick={() => send(s.question)}>
+                      {title && (
+                        <span className="s-session">
+                          Session {s.session} · {title}
+                        </span>
+                      )}
+                      <span className="s-q">{s.question}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           ) : (
@@ -433,7 +449,9 @@ export default function App() {
                     content={m.content}
                     citations={m.citations}
                     near={m.near}
-                    sessions={sessions}
+                    canOpen={canOpenSessions}
+                    onOpenSession={openSession}
+                    onShowSessions={canOpenSessions ? () => openSession(null) : undefined}
                     stopped={m.stopped}
                   />
                 )
@@ -445,7 +463,7 @@ export default function App() {
                 <AssistantTurn content={streamingText} citations={streamingCites} streaming />
               )}
 
-              {failed && <ErrorTurn message={failed.message} onRetry={retryFailed} onEdit={editFailed} />}
+              {failed && <ErrorTurn message={failed.message} onRetry={retryFailed} />}
             </>
           )}
 
@@ -460,6 +478,8 @@ export default function App() {
           busy={sending}
           maxLength={MAX_QUESTION}
         />
+
+        <SessionPanel panel={panel} kb={kb} api={api} onOpenSession={openSession} onClose={closePanel} />
       </main>
     </div>
   );

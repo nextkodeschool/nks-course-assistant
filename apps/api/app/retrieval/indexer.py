@@ -24,6 +24,7 @@ from app.retrieval.embeddings import EmbeddingClient
 
 log = logging.getLogger("nks.indexer")
 
+
 def _find_seed_dir() -> Path:
     """Locate seed/knowledge-base-sample by walking up from this file.
 
@@ -56,6 +57,8 @@ class ParsedChunk:
     session_title: str
     topic: str | None
     content: str
+    # Order within the session, so the notes can be read back as written.
+    position: int = 0
 
 
 def _parse_front_matter(text: str) -> tuple[dict[str, str], str]:
@@ -95,7 +98,7 @@ def chunk_document(text: str) -> list[ParsedChunk]:
     if not matches:
         stripped = body.strip()
         return (
-            [ParsedChunk(session_number, session_title, topic, stripped)]
+            [ParsedChunk(session_number, session_title, topic, stripped, 0)]
             if len(stripped) >= MIN_CHUNK_CHARS
             else []
         )
@@ -118,6 +121,7 @@ def chunk_document(text: str) -> list[ParsedChunk]:
                 session_title=session_title,
                 topic=topic,
                 content=f"{heading}\n\n{section}",
+                position=len(chunks),
             )
         )
 
@@ -160,6 +164,7 @@ async def index_seed_notes(db: AsyncSession, directory: Path | None = None) -> i
                 session_number=chunk.session_number,
                 session_title=chunk.session_title,
                 topic=chunk.topic,
+                position=chunk.position,
                 content=chunk.content,
                 embedding=vector,
             )
