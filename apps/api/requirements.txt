@@ -1,0 +1,26 @@
+# Pinned deliberately. An unpinned dependency means the app that worked for you
+# in Session 4 quietly breaks for someone cloning it in Session 30.
+#
+# Everything here is async-capable. See "Execution model" in the README: this
+# codebase is fully async, and adding a blocking client here is how that gets
+# broken by accident.
+
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+
+# ORM and driver. asyncpg is the async Postgres driver -- psycopg2 here would
+# block the event loop on every query.
+SQLAlchemy==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+
+# pgvector's SQLAlchemy type, for the kb_chunks.embedding column.
+pgvector==0.3.6
+
+# Password hashing. argon2id is the current recommendation.
+argon2-cffi==23.1.0
+
+# Settings parsing and validation.
+pydantic==2.9.2
+pydantic-settings==2.6.1
+email-validator==2.2.0

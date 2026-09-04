@@ -1,0 +1,83 @@
+# Three things run here, and each one behaves differently on purpose.
+#
+#   postgres  stateful   -- has a volume, survives everything
+#   migrate   run-once   -- does its job and exits
+#   api       long-lived -- restarts freely, keeps nothing
+#
+# The web container joins in Phase 3, once there is a React app to serve.
+
+services:
+  postgres:
+    # pgvector/pgvector is the stock postgres image with the vector extension
+    # already compiled in. Installing it into plain postgres:16 means building
+    # from source in a Dockerfile, for no gain.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: nks
+      POSTGRES_PASSWORD: nks
+      POSTGRES_DB: nks
+    volumes:
+      # Named volume, not a bind mount. This is the reason your chat history
+      # survives "docker compose down" -- the container is destroyed, the
+      # volume is not. Use "docker compose down -v" to wipe it and start over.
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # depends_on with condition: service_healthy waits for THIS to pass, not
+      # merely for the container to exist. Without a healthcheck, "started"
+      # means the process launched -- Postgres takes a few more seconds after
+      # that before it accepts connections.
+      test: ["CMD-SHELL", "pg_isready -U nks -d nks"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    ports:
+      # Exposed so you can connect with psql or a GUI while learning. Not
+      # something you would do in production.
+      - "5432:5432"
+
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://nks:nks@postgres:5432/nks
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Runs alembic, then exits. The api service waits for it to finish
+    # successfully, so on a fresh clone the schema exists before the app
+    # starts -- one command for the student, without the API itself ever
+    # migrating its own database at boot.
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    env_file: .env
+    environment:
+      # Overrides whatever is in .env: inside the compose network the database
+      # is reachable at the service name "postgres", not at localhost.
+      DATABASE_URL: postgresql+asyncpg://nks:nks@postgres:5432/nks
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz').status==200 else 1)\""]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    extra_hosts:
+      # Lets the container reach Ollama running on the host machine. Docker
+      # Desktop provides this automatically; on Linux it needs stating.
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  pgdata:
