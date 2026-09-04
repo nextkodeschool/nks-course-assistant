@@ -1,7 +1,13 @@
-# NKS Course Assistant
+# Kora
+
+**Ask your course notes.**
 
 A question-answering assistant over the Next Kode School course notes — and the application you
 will clone, configure, and deploy yourself, end to end, across the DevOps curriculum.
+
+Ask a normal question and Kora answers from the session notes, naming the session it drew on so
+you can go and read the original. If a topic was never covered in class, it says so rather than
+inventing an answer.
 
 You will run it locally under Docker Compose, then on a VM with Ansible, then on ECS Fargate,
 then on Kubernetes with Helm. Same application every time. The point is that the application is
@@ -11,13 +17,18 @@ ephemeral filesystems, readiness probes, and rollout ordering mean something.
 
 ---
 
-> ## ⚠ Status: skeleton — M1 not shipped
+> ## Status
 >
-> Phase 1 is complete: the contracts are frozen and the repository is laid out. **There is no
-> application code yet**, by design — see [`CONTRACT.md`](CONTRACT.md) for what has been fixed
-> permanently and why that had to happen before any code was written.
+> **The app works.** Sign in, ask a question, get an answer streamed back with its sources, and
+> your history survives the containers being destroyed and rebuilt. Run the Quickstart below.
 >
-> The Quickstart below describes the app as it will work when M1 ships. It does not work today.
+> Two things are not finished. The three bundled notes in `seed/` are **samples, not the real
+> course notes** — they were written from curriculum material so the app is useful out of the
+> box. And `KB_MODE=hosted` has a working client but nothing on the other end yet, so everything
+> currently runs in local mode.
+>
+> Still to come: production containers, CI, Terraform, Ansible, ECS and Kubernetes. The
+> application does not change; only where it runs does.
 
 ---
 
@@ -47,7 +58,7 @@ If you fork this and add a library that only has a blocking client, that call go
 Three commands, under fifteen minutes:
 
 ```bash
-git clone <this-repo> && cd nks-course-assistant
+git clone <this-repo> && cd kora
 ```
 
 ```bash

@@ -77,7 +77,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="NKS Course Assistant",
+    title="Kora",
     version="1.0.0",
     lifespan=lifespan,
     # The browser only ever talks to its own origin -- nginx serves the SPA

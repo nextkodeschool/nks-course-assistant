@@ -40,7 +40,7 @@ function Auth({ onSignedIn }) {
   return (
     <div className="auth-wrap">
       <form className="auth-card" onSubmit={submit}>
-        <h1>{isRegister ? "Create an account" : "NKS Course Assistant"}</h1>
+        <h1>{isRegister ? "Create an account" : "Kora"}</h1>
         <p className="sub">
           {isRegister
             ? "This account lives only in your own database."
@@ -260,7 +260,7 @@ export default function App() {
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <h1>NKS Course Assistant</h1>
+          <h1>Kora</h1>
           <span className="mode">Course notes</span>
         </div>
 
