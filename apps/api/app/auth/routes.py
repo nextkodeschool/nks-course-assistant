@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+from uuid import UUID
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import service
@@ -28,7 +29,11 @@ class Credentials(BaseModel):
 
 
 class UserOut(BaseModel):
-    id: str
+    # id is a UUID column, not a string. Declaring it as str here does not
+    # coerce -- Pydantic validates the response too, and rejects it.
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
     email: str
     created_at: datetime
 
