@@ -1,0 +1,53 @@
+# ─── Secrets ─────────────────────────────────────────────────────────────────
+# The first entry is the one that matters. .env.example is tracked; nothing
+# else matching .env* ever is.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials
+secrets.yml
+ansible/inventory/*.ini
+!ansible/inventory/*.example.ini
+
+# ─── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.Python
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# ─── Node ────────────────────────────────────────────────────────────────────
+node_modules/
+dist/
+.vite/
+*.local
+
+# ─── Terraform ───────────────────────────────────────────────────────────────
+# Never commit state. It contains secrets in plaintext, and shared state
+# belongs in a remote backend, not in git.
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+
+# ─── Docker / local data ─────────────────────────────────────────────────────
+.docker/
+pgdata/
+
+# ─── Editors and OS ──────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
