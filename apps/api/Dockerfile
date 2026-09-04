@@ -26,6 +26,9 @@ COPY apps/api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY apps/api/ .
+# The bundled sample notes, indexed on first run when KB_MODE=local.
+COPY seed/ ./seed/
+
 COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

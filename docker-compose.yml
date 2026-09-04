@@ -3,8 +3,7 @@
 #   postgres  stateful   -- has a volume, survives everything
 #   migrate   run-once   -- does its job and exits
 #   api       long-lived -- restarts freely, keeps nothing
-#
-# The web container joins in Phase 3, once there is a React app to serve.
+#   web       long-lived -- nginx, serves the SPA and proxies /api/*
 
 services:
   postgres:
@@ -78,6 +77,17 @@ services:
       # Lets the container reach Ollama running on the host machine. Docker
       # Desktop provides this automatically; on Linux it needs stating.
       - "host.docker.internal:host-gateway"
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    depends_on:
+      - api
+    ports:
+      # This is the address you actually open. The api port is also published
+      # for curl and the docs page, but the browser only ever needs this one.
+      - "8080:8080"
 
 volumes:
   pgdata:

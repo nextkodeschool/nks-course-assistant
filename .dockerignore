@@ -16,6 +16,7 @@ node_modules/
 dist/
 .terraform/
 *.tfstate*
-README.md
-*.md
-!alembic/**
+
+# Docs, but NOT seed/ -- the sample notes are markdown and must ship.
+/*.md
+docs/

@@ -19,9 +19,11 @@ from sqlalchemy import text
 
 from app.auth.routes import router as auth_router
 from app.auth.service import purge_expired_sessions
+from app.chat.routes import router as chat_router
 from app.config import settings
 from app.db.session import SessionLocal, engine
 from app.health.routes import router as health_router
+from app.retrieval.indexer import index_is_empty, index_seed_notes
 
 logging.basicConfig(
     level=settings.log_level.upper(),
@@ -49,6 +51,23 @@ async def lifespan(app: FastAPI):
         if removed:
             log.info("Purged %d expired session(s)", removed)
 
+    # FR-4: a fresh clone indexes the bundled sample notes by itself, so
+    # "clone, copy env, up" really is the whole setup.
+    if settings.kb_mode == "local":
+        async with SessionLocal() as db:
+            if await index_is_empty(db):
+                try:
+                    count = await index_seed_notes(db)
+                    await db.commit()
+                    log.info("Indexed %d chunk(s) from the sample notes", count)
+                except Exception as exc:
+                    # Not fatal. The app still starts and can still be logged
+                    # into; asking a question will report the same problem
+                    # with the same message.
+                    await db.rollback()
+                    log.warning("Could not index the sample notes: %s", exc)
+                    log.warning("Is Ollama running?  ollama pull %s", settings.embedding_model)
+
     log.info("API ready  ·  env=%s  kb_mode=%s", settings.app_env, settings.kb_mode)
 
     yield
@@ -71,3 +90,4 @@ app = FastAPI(
 
 app.include_router(health_router)
 app.include_router(auth_router)
+app.include_router(chat_router)
