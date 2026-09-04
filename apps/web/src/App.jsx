@@ -1,5 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, askQuestion } from "./api";
+import {
+  Conversation,
+  ConversationAnchor,
+  ConversationContent,
+} from "./components/conversation";
+import { Message, MessageAvatar, MessageContent, MessageSources } from "./components/message";
+import { Response } from "./components/response";
+import { ThinkingIndicator } from "./components/shimmering-text";
 
 const MAX_QUESTION = 500;
 
@@ -9,6 +17,18 @@ const SUGGESTIONS = [
   "How do I make my Docker builds cache properly?",
   "What does exit code 137 mean?",
 ];
+
+function Wordmark() {
+  return (
+    <div className="wordmark">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="12" cy="12" r="9.2" stroke="currentColor" strokeWidth="1.9" />
+        <circle cx="12" cy="12" r="3.1" fill="currentColor" />
+      </svg>
+      <span>Kora</span>
+    </div>
+  );
+}
 
 /* ------------------------------------------------------------------ auth */
 
@@ -40,14 +60,23 @@ function Auth({ onSignedIn }) {
   return (
     <div className="auth-wrap">
       <form className="auth-card" onSubmit={submit}>
-        <h1>{isRegister ? "Create an account" : "Kora"}</h1>
+        <div className="auth-brand">
+          <Wordmark />
+          <p className="tagline">Ask your course notes</p>
+        </div>
+
+        <h1>{isRegister ? "Create your account" : "Sign in"}</h1>
         <p className="sub">
           {isRegister
-            ? "This account lives only in your own database."
-            : "Ask questions about your course notes."}
+            ? "This account lives only in your own database, on your own machine."
+            : "Answers come from your class notes, and name the session they came from."}
         </p>
 
-        {error && <div className="error">{error}</div>}
+        {error && (
+          <div className="error" role="alert">
+            {error}
+          </div>
+        )}
 
         <div className="field">
           <label htmlFor="email">Email</label>
@@ -73,10 +102,11 @@ function Auth({ onSignedIn }) {
             minLength={8}
             autoComplete={isRegister ? "new-password" : "current-password"}
           />
+          {isRegister && <span className="hint">At least 8 characters.</span>}
         </div>
 
         <button type="submit" disabled={busy}>
-          {busy ? "Working..." : isRegister ? "Create account" : "Sign in"}
+          {busy ? "Working…" : isRegister ? "Create account" : "Sign in"}
         </button>
 
         <p className="switch">
@@ -96,28 +126,72 @@ function Auth({ onSignedIn }) {
   );
 }
 
-/* ------------------------------------------------------------------ chat */
+/* --------------------------------------------------------------- composer */
 
-function Message({ role, content, citations, streaming }) {
+function Composer({ value, onChange, onSubmit, disabled }) {
+  const ref = useRef(null);
+  const over = value.length > MAX_QUESTION;
+
+  // Grow with the text, up to a ceiling. Reset to auto first, or the box can
+  // only ever get taller and never shorter again.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
+  }, [value]);
+
   return (
-    <div className={`msg ${role}`}>
-      <div className="who">{role === "user" ? "You" : "Assistant"}</div>
-      <div className="bubble">
-        {content}
-        {streaming && <span className="cursor" />}
-      </div>
-      {citations?.length > 0 && (
-        <div className="cites">
-          {citations.map((c) => (
-            <span className="cite" key={c.session_number}>
-              Session {c.session_number} · {c.session_title}
-            </span>
-          ))}
+    <div className="composer">
+      <div className="composer-inner">
+        <div className={`composer-box ${over ? "over" : ""}`}>
+          <textarea
+            ref={ref}
+            rows={1}
+            value={value}
+            placeholder="Ask about anything covered in class…"
+            onChange={(e) => onChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                onSubmit();
+              }
+            }}
+            disabled={disabled}
+            aria-label="Your question"
+          />
+          <button
+            onClick={onSubmit}
+            disabled={disabled || !value.trim() || over}
+            className="send"
+            aria-label="Send question"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M5 12h14m0 0l-6-6m6 6l-6 6"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
         </div>
-      )}
+
+        <div className="composer-meta">
+          <span className="kbd-hint">
+            <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line
+          </span>
+          <span className={`count ${over ? "over" : ""}`}>
+            {value.length}/{MAX_QUESTION}
+          </span>
+        </div>
+      </div>
     </div>
   );
 }
+
+/* -------------------------------------------------------------------- app */
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -130,10 +204,16 @@ export default function App() {
   const [draft, setDraft] = useState("");
   const [streamingText, setStreamingText] = useState(null);
   const [streamingCites, setStreamingCites] = useState([]);
+  const [stage, setStage] = useState(null); // "searching" | "writing" | null
   const [error, setError] = useState(null);
   const [sending, setSending] = useState(false);
 
-  const bottomRef = useRef(null);
+  // Kept in a ref because the setStreamingText callback below runs after
+  // render and would otherwise close over a stale citations value.
+  const citesRef = useRef([]);
+  useEffect(() => {
+    citesRef.current = streamingCites;
+  }, [streamingCites]);
 
   useEffect(() => {
     api
@@ -154,9 +234,7 @@ export default function App() {
     // Open the most recent conversation on load. Landing on an empty screen
     // when you have history reads as "my history is gone".
     refreshConversations()
-      .then((list) => {
-        setActiveId((current) => current ?? list[0]?.id ?? null);
-      })
+      .then((list) => setActiveId((current) => current ?? list[0]?.id ?? null))
       .catch(() => {});
   }, [user, refreshConversations]);
 
@@ -168,15 +246,12 @@ export default function App() {
     api.listMessages(activeId).then(setMessages).catch(() => setMessages([]));
   }, [activeId]);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingText]);
-
   async function newConversation() {
     const created = await api.createConversation();
     setConversations((prev) => [created, ...prev]);
     setActiveId(created.id);
     setMessages([]);
+    setError(null);
     return created.id;
   }
 
@@ -192,29 +267,35 @@ export default function App() {
 
     setError(null);
     setSending(true);
+    setStage("searching");
     setDraft("");
 
     const conversationId = activeId || (await newConversation());
 
     // Shown immediately. The server has it too, but waiting for a round trip
-    // to display what someone just typed makes the whole thing feel broken.
+    // to display what someone just typed makes the app feel broken.
     setMessages((prev) => [
       ...prev,
       { id: `local-${Date.now()}`, role: "user", content: question, citations: [] },
     ]);
-    setStreamingText("");
+    setStreamingText(null);
     setStreamingCites([]);
 
     let failed = false;
 
     await askQuestion(conversationId, question, {
-      onSources: setStreamingCites,
-      onToken: (token) => setStreamingText((prev) => (prev ?? "") + token),
+      onSources: (citations) => {
+        setStreamingCites(citations);
+        setStage("writing");
+      },
+      onToken: (token) => {
+        setStage(null);
+        setStreamingText((prev) => (prev ?? "") + token);
+      },
       onError: (message) => {
         failed = true;
         setError(message);
       },
-      onDone: () => {},
     });
 
     setStreamingText((finalText) => {
@@ -225,23 +306,17 @@ export default function App() {
             id: `local-a-${Date.now()}`,
             role: "assistant",
             content: finalText,
-            citations: streamingCitesRef.current,
+            citations: citesRef.current,
           },
         ]);
       }
       return null;
     });
 
+    setStage(null);
     setSending(false);
     refreshConversations().catch(() => {});
   }
-
-  // Kept in a ref because the setState callback above runs after render and
-  // would otherwise close over a stale value.
-  const streamingCitesRef = useRef([]);
-  useEffect(() => {
-    streamingCitesRef.current = streamingCites;
-  }, [streamingCites]);
 
   async function signOut() {
     await api.logout().catch(() => {});
@@ -254,23 +329,27 @@ export default function App() {
   if (loading) return null;
   if (!user) return <Auth onSignedIn={setUser} />;
 
-  const over = draft.length > MAX_QUESTION;
+  const activeTitle = conversations.find((c) => c.id === activeId)?.title;
+  const isEmpty = messages.length === 0 && streamingText === null && !stage;
 
   return (
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <h1>Kora</h1>
-          <span className="mode">Course notes</span>
+          <Wordmark />
         </div>
 
         <div className="new">
-          <button onClick={newConversation} style={{ width: "100%" }}>
+          <button onClick={newConversation}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+            </svg>
             New conversation
           </button>
         </div>
 
-        <div className="convos">
+        <nav className="convos" aria-label="Your conversations">
+          {conversations.length === 0 && <p className="convos-empty">Nothing yet.</p>}
           {conversations.map((c) => (
             <div key={c.id} className={`convo ${c.id === activeId ? "active" : ""}`}>
               <button className="title" onClick={() => setActiveId(c.id)} title={c.title}>
@@ -279,80 +358,113 @@ export default function App() {
               <button
                 className="del"
                 onClick={() => removeConversation(c.id)}
-                aria-label={`Delete ${c.title}`}
+                aria-label={`Delete conversation: ${c.title}`}
               >
-                ×
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
               </button>
             </div>
           ))}
-        </div>
+        </nav>
 
         <div className="sidebar-foot">
-          <span className="email" title={user.email}>{user.email}</span>
-          <button className="ghost" onClick={signOut}>Sign out</button>
+          <div className="who">
+            <MessageAvatar name={user.email} />
+            <span className="email" title={user.email}>
+              {user.email}
+            </span>
+          </div>
+          <button className="ghost" onClick={signOut}>
+            Sign out
+          </button>
         </div>
       </aside>
 
       <main className="main">
-        <div className="messages">
-          <div className="thread">
-            {messages.length === 0 && streamingText === null ? (
+        <header className="topbar">
+          <h2>{activeTitle || "New conversation"}</h2>
+          <span className="badge">Grounded in course notes</span>
+        </header>
+
+        <Conversation>
+          <ConversationContent>
+            {isEmpty ? (
               <div className="empty">
-                <h2>Ask about your course notes</h2>
+                <div className="empty-mark">
+                  <Wordmark />
+                </div>
+                <h2>Ask about anything covered in class</h2>
                 <p>
-                  Answers come only from the session notes. If something was not covered
-                  in class, you will be told so rather than guessed at.
+                  Every answer comes from the session notes and names the session it came from.
+                  If a topic was never taught, Kora says so instead of guessing.
                 </p>
                 <div className="suggestions">
                   {SUGGESTIONS.map((s) => (
-                    <button key={s} onClick={() => send(s)}>{s}</button>
+                    <button key={s} onClick={() => send(s)}>
+                      <span>{s}</span>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path
+                          d="M5 12h14m0 0l-6-6m6 6l-6 6"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </button>
                   ))}
                 </div>
               </div>
             ) : (
               <>
                 {messages.map((m) => (
-                  <Message key={m.id} {...m} />
+                  <Message key={m.id} from={m.role}>
+                    <MessageAvatar name={m.role === "user" ? user.email : "Kora"} />
+                    <div className="message-body">
+                      <MessageContent variant={m.role === "user" ? "contained" : "flat"}>
+                        {m.role === "assistant" ? <Response>{m.content}</Response> : m.content}
+                      </MessageContent>
+                      {m.role === "assistant" && <MessageSources citations={m.citations} />}
+                    </div>
+                  </Message>
                 ))}
+
+                {stage && (
+                  <Message from="assistant">
+                    <MessageAvatar name="Kora" />
+                    <div className="message-body">
+                      <ThinkingIndicator stage={stage} />
+                    </div>
+                  </Message>
+                )}
+
                 {streamingText !== null && (
-                  <Message
-                    role="assistant"
-                    content={streamingText}
-                    citations={streamingCites}
-                    streaming
-                  />
+                  <Message from="assistant">
+                    <MessageAvatar name="Kora" />
+                    <div className="message-body">
+                      <MessageContent variant="flat">
+                        <Response>{streamingText}</Response>
+                        <span className="cursor" aria-hidden="true" />
+                      </MessageContent>
+                      <MessageSources citations={streamingCites} />
+                    </div>
+                  </Message>
                 )}
               </>
             )}
 
-            {error && <div className="error">{error}</div>}
-            <div ref={bottomRef} />
-          </div>
-        </div>
+            {error && (
+              <div className="error" role="alert">
+                {error}
+              </div>
+            )}
 
-        <div className="composer">
-          <div className="composer-inner">
-            <textarea
-              rows={1}
-              value={draft}
-              placeholder="Ask a question about the course..."
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  send();
-                }
-              }}
-              disabled={sending}
-            />
-            <button onClick={() => send()} disabled={sending || !draft.trim() || over}>
-              {sending ? "..." : "Ask"}
-            </button>
-          </div>
-          <div className={`count ${over ? "over" : ""}`}>
-            {draft.length} / {MAX_QUESTION}
-          </div>
-        </div>
+            <ConversationAnchor deps={[messages.length, streamingText, stage, error]} />
+          </ConversationContent>
+        </Conversation>
+
+        <Composer value={draft} onChange={setDraft} onSubmit={() => send()} disabled={sending} />
       </main>
     </div>
   );
