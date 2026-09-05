@@ -47,7 +47,11 @@ SEED_DIR = _find_seed_dir()
 # add noise to search without ever being a useful answer.
 MIN_CHUNK_CHARS = 120
 
-FRONT_MATTER = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+# Three hyphens is the convention, but these notes are generated one document
+# at a time and a stray fourth hyphen should not cost a session its title and
+# number -- every citation from that file would read "Untitled session".
+# Accept three or more at both ends.
+FRONT_MATTER = re.compile(r"\A-{3,}\s*\n(.*?)\n-{3,}\s*\n", re.DOTALL)
 HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
 
 
